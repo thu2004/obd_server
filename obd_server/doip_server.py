@@ -67,6 +67,8 @@ class DoIPServer:
         self.running = False
         self._busy = False  # Track if server is busy
         self.active_sessions = {}  # Track active diagnostic sessions
+        self.vehicle_identified = False  # Track if vehicle is identified
+        self.identification_time = 0  # Timestamp of last identification
         
         # Example vehicle data (in a real implementation, this would be dynamic)
         self.vehicle_data = {
@@ -230,6 +232,11 @@ class DoIPServer:
         """Handle vehicle identification request."""
         logger.info(f"Vehicle identification request from {addr}")
         try:
+            # Mark vehicle as identified
+            self.vehicle_identified = True
+            self.identification_time = time.time()
+            logger.info("Vehicle identified, diagnostic services are now available")
+            
             # Create header
             header = struct.pack(
                 '>BBHL',
@@ -331,6 +338,13 @@ class DoIPServer:
             target_address = int.from_bytes(payload[2:4], 'big')
             service_id = payload[4]
             
+            # Check if vehicle is identified before processing diagnostic messages
+            if not self.vehicle_identified:
+                logger.warning(f"Rejecting diagnostic message: Vehicle not identified yet")
+                self._send_negative_response(addr, source_address, target_address,
+                                           service_id, UDSNegativeResponseCode.REQUIRE_TIME_DELAY)
+                return
+            
             # Update last activity for this session
             if source_address in self.active_sessions:
                 self.active_sessions[source_address]['last_activity'] = time.time()
@@ -338,6 +352,8 @@ class DoIPServer:
             # Route to appropriate handler based on service ID
             if service_id == UDSServiceID.TESTER_PRESENT:
                 self._handle_tester_present(addr, source_address, target_address, payload[5:])
+            elif service_id == UDSServiceID.DIAGNOSTIC_SESSION_CONTROL:
+                self._handle_diagnostic_session_control(addr, source_address, target_address, payload[5:])
             else:
                 logger.warning(f"Unsupported service ID: 0x{service_id:02X} from {addr}")
                 self._send_negative_response(addr, source_address, target_address, 
@@ -412,3 +428,46 @@ class DoIPServer:
             logger.info(f"Sent negative response (NRC: 0x{nrc:02X}) to {addr}")
         except Exception as e:
             logger.error(f"Error sending negative response: {e}")
+            
+    def _handle_diagnostic_session_control(self, addr: Tuple[str, int], source_addr: int, 
+                                        target_addr: int, payload: bytes) -> None:
+        """Handle Diagnostic Session Control service (0x10)."""
+        try:
+            if len(payload) < 1:
+                logger.warning("Invalid Diagnostic Session Control message")
+                self._send_negative_response(addr, source_addr, target_addr,
+                                           UDSServiceID.DIAGNOSTIC_SESSION_CONTROL,
+                                           UDSNegativeResponseCode.INCORRECT_MESSAGE_LENGTH_OR_INVALID_FORMAT)
+                return
+                
+            sub_function = payload[0]
+            logger.info(f"Diagnostic Session Control request: sub-function 0x{sub_function:02X}")
+            
+            # In a real implementation, you would handle different session types here
+            # For this example, we'll just accept any session type
+            
+            # Create positive response
+            header = struct.pack(
+                '>BBHL',
+                DOIP_PROTOCOL_VERSION,
+                0xFF ^ DOIP_PROTOCOL_VERSION,
+                DoIPPayloadType.DIAGNOSTIC_MESSAGE_POSITIVE_ACK,
+                7  # 2 (target) + 2 (source) + 3 (SID + sub-function + 0x00)
+            )
+            
+            # Create payload: target address + source address + positive response
+            response_payload = struct.pack(
+                '>HBBB',
+                target_addr,
+                source_addr,
+                UDSServiceID.DIAGNOSTIC_SESSION_CONTROL + 0x40,  # Positive response SID
+                sub_function,  # Echo back the requested sub-function
+                0x00  # No additional parameters
+            )
+            
+            response = header + response_payload
+            self.socket.sendto(response, addr)
+            logger.info(f"Sent Diagnostic Session Control response to {addr}")
+            
+        except Exception as e:
+            logger.error(f"Error handling Diagnostic Session Control: {e}")

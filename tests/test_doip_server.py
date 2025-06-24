@@ -70,6 +70,11 @@ def test_tester_present(doip_server, test_socket):
     test_socket.sendto(header + payload, ('127.0.0.1', doip_server.port))
     test_socket.recvfrom(1024)  # Discard response
     
+    # Send vehicle identification request
+    header = struct.pack('>BBHL', 0x02, 0xFD, DoIPPayloadType.VEHICLE_IDENTIFICATION_REQUEST, 0)
+    test_socket.sendto(header, ('127.0.0.1', doip_server.port))
+    test_socket.recvfrom(1024)  # Discard vehicle announcement
+    
     # Send Tester Present with response (sub-function 0x00 - with response)
     # Payload: source address (2) + target address (2) + service ID (1) + sub-function (1)
     header = struct.pack('>BBHL', 0x02, 0xFD, DoIPPayloadType.DIAGNOSTIC_MESSAGE, 6)
