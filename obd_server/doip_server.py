@@ -352,9 +352,13 @@ class DoIPServer:
                 return
                 
             # Parse routing activation request
-            source_address, activation_type = struct.unpack('>HB', payload[:3])
-            
-            logger.info(f"Routing activation request from {addr}, source: 0x{source_address:04X}, type: {activation_type}")
+            # Format: source_address (2) + activation_type (1) + reserved (4) + odi (4)
+            if len(payload) >= 11:  # Full format with ODI
+                source_address, activation_type = struct.unpack('>H7xB', payload[:10])
+                logger.info(f"Routing activation request from {addr}, source: 0x{source_address:04X}, type: {activation_type} (with ODI)")
+            else:  # Minimal format without ODI
+                source_address, activation_type = struct.unpack('>HB', payload[:3])
+                logger.info(f"Routing activation request from {addr}, source: 0x{source_address:04X}, type: {activation_type}")
             
             # Check if server is busy
             if self._busy:
@@ -372,15 +376,16 @@ class DoIPServer:
                 DOIP_PROTOCOL_VERSION,
                 0xFF ^ DOIP_PROTOCOL_VERSION,
                 DoIPPayloadType.ROUTING_ACTIVATION_RESPONSE,
-                5  # payload length (2 + 2 + 1)
+                0x00000005  # payload length (2 + 2 + 1)
             )
             
             # Create response payload
+            # Format: client address (2) + server address (2) + response code (1)
             response_payload = struct.pack(
                 '>HHB',
-                source_address,  # client address
-                self.vehicle_data['LOGICAL_ADDRESS'],  # server address
-                response_code
+                source_address,  # client logical address
+                self.vehicle_data['LOGICAL_ADDRESS'],  # server logical address
+                response_code  # response code (0x10 for success)
             )
             
             # Send response
