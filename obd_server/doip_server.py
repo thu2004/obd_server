@@ -352,13 +352,19 @@ class DoIPServer:
                 return
                 
             # Parse routing activation request
-            # Format: source_address (2) + activation_type (1) + reserved (4) + odi (4)
-            if len(payload) >= 11:  # Full format with ODI
-                source_address, activation_type = struct.unpack('>H7xB', payload[:10])
-                logger.info(f"Routing activation request from {addr}, source: 0x{source_address:04X}, type: {activation_type} (with ODI)")
-            else:  # Minimal format without ODI
-                source_address, activation_type = struct.unpack('>HB', payload[:3])
-                logger.info(f"Routing activation request from {addr}, source: 0x{source_address:04X}, type: {activation_type}")
+            # Format: source_address (2) + activation_type (1) + reserved (4) + OBD-specific data (4)
+            if len(payload) >= 11:  # Full format with OBD-specific data
+                source_address = int.from_bytes(payload[0:2], 'big')
+                activation_type = payload[2]
+                # OBD-specific data is in bytes 3-10 (reserved + OBD data)
+                obd_data = payload[3:11]
+                logger.info(f"Routing activation request from {addr}, source: 0x{source_address:04X}, "
+                            f"type: {activation_type}, OBD data: {obd_data.hex(' ')}")
+            else:  # Minimal format without OBD data
+                source_address = int.from_bytes(payload[0:2], 'big')
+                activation_type = payload[2]
+                logger.info(f"Routing activation request from {addr}, source: 0x{source_address:04X}, "
+                            f"type: {activation_type} (minimal format)")
             
             # Check if server is busy
             if self._busy:
@@ -368,9 +374,10 @@ class DoIPServer:
             
             # In a real implementation, you would validate the activation request
             # and potentially maintain a list of active clients
-            response_code = 0x10  # Success
+            response_code = 0x10  # 0x10 = Successfully completed
             
             # Create response header
+            # Format: protocol version (1) + inverse (1) + payload type (2) + length (4)
             header = struct.pack(
                 '>BBHL',
                 DOIP_PROTOCOL_VERSION,
@@ -383,10 +390,13 @@ class DoIPServer:
             # Format: client address (2) + server address (2) + response code (1)
             response_payload = struct.pack(
                 '>HHB',
-                source_address,  # client logical address
+                source_address,  # client logical address (echo back what client sent)
                 self.vehicle_data['LOGICAL_ADDRESS'],  # server logical address
-                response_code  # response code (0x10 for success)
+                response_code  # response code (0x10 = Successfully completed)
             )
+            
+            # Log the response for debugging
+            logger.debug(f"Sending routing activation response: {header.hex(' ')} {response_payload.hex(' ')}")
             
             # Send response
             response = header + response_payload
