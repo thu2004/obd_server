@@ -1,4 +1,5 @@
 import pytest
+import logging
 import socket
 import struct
 import threading
@@ -7,6 +8,10 @@ from obd_server.doip_server import (
     DoIPServer, DoIPPayloadType, DoIPNackCodes,
     UDSServiceID, UDSNegativeResponseCode
 )
+
+# Configure logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 def test_server_initialization(doip_server):
     """Test that the server initializes correctly."""
@@ -125,10 +130,52 @@ def test_end_to_end_flow(doip_server, free_udp_port):
         
         # Verify vehicle announcement
         data, _ = udp_socket.recvfrom(1024)
-        # The payload type is at bytes 2-4 in the DoIP header (after version and inverse version)
-        payload_type = int.from_bytes(data[2:4], 'big')
+        
+        # Verify DoIP header (8 bytes)
+        # Protocol version (1) + Inverse version (1) + Payload type (2) + Payload length (4)
+        protocol_version, inverse_version, payload_type, payload_length = struct.unpack('>BBHL', data[:8])
+        
+        # Verify protocol version and its inverse
+        assert protocol_version == 0x02, f"Expected protocol version 0x02, got 0x{protocol_version:02X}"
+        assert inverse_version == 0xFD, f"Expected inverse protocol version 0xFD, got 0x{inverse_version:02X}"
+        assert protocol_version ^ inverse_version == 0xFF, "Protocol version and its inverse should be complementary"
+        
+        # Verify payload type
         assert payload_type == DoIPPayloadType.VEHICLE_ANNOUNCEMENT, \
             f"Expected vehicle announcement (0x{DoIPPayloadType.VEHICLE_ANNOUNCEMENT:04X}), got 0x{payload_type:04X}"
+        
+        # Verify payload length (VIN + Logical Address + EID + GID + Further Action)
+        expected_payload_length = 17 + 2 + 6 + 6 + 1  # VIN(17) + Addr(2) + EID(6) + GID(6) + Action(1)
+        assert payload_length == expected_payload_length, \
+            f"Expected payload length {expected_payload_length}, got {payload_length}"
+        
+        # Parse payload
+        payload = data[8:8+payload_length]
+        
+        # Verify VIN (17 bytes, ASCII)
+        vin = payload[:17].decode('ascii')
+        assert len(vin) == 17, f"VIN should be 17 characters, got {len(vin)}"
+        assert vin == '1HGCM82633A123456', f"Unexpected VIN: {vin}"
+        
+        # Verify Logical Address (2 bytes, big-endian)
+        logical_address = int.from_bytes(payload[17:19], 'big')
+        assert logical_address == 0x0E80, f"Unexpected logical address: 0x{logical_address:04X}"
+        
+        # Verify EID (6 bytes)
+        eid = payload[19:25]
+        expected_eid = bytes([0x00, 0x01, 0x02, 0x03, 0x04, 0x05])
+        assert eid == expected_eid, f"Unexpected EID: {eid.hex()}"
+        
+        # Verify GID (6 bytes, should be zeros)
+        gid = payload[25:31]
+        expected_gid = bytes([0x00] * 6)
+        assert gid == expected_gid, f"Unexpected GID: {gid.hex()}"
+        
+        # Verify Further Action Required (1 byte, should be 0x00)
+        further_action = payload[31]
+        assert further_action == 0x00, f"Unexpected further action: 0x{further_action:02X}"
+        
+        logger.info(f"Verified vehicle announcement - VIN: {vin}, Logical Address: 0x{logical_address:04X}")
         
         # Step 2: Establish TCP connection
         tcp_socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
